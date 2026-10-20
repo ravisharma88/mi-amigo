@@ -9,9 +9,28 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
   padding: 24px 28px 16px;
   border-bottom: 1px solid var(--border);
+}
+
+.user-id-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.user-id-field input {
+  width: min(220px, 42vw);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-h);
+  font: inherit;
 }
 
 .chat-header h1 {
@@ -118,6 +137,7 @@
 }
 
 .composer textarea:focus-visible,
+.user-id-field input:focus-visible,
 .ghost:focus-visible,
 .composer button:focus-visible {
   outline: 2px solid var(--accent);

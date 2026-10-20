@@ -8,17 +8,10 @@ type ChatMessage = {
   content: string
 }
 
-const CONVERSATION_KEY = 'mi-amigo.conversationId'
+const USER_ID_KEY = 'mi-amigo.userId'
 
-function getOrCreateConversationId() {
-  const existing = sessionStorage.getItem(CONVERSATION_KEY)
-  if (existing) {
-    return existing
-  }
-
-  const id = crypto.randomUUID()
-  sessionStorage.setItem(CONVERSATION_KEY, id)
-  return id
+function getSavedUserId() {
+  return localStorage.getItem(USER_ID_KEY) ?? ''
 }
 
 async function sendChatMessage(conversationId: string, message: string) {
@@ -39,7 +32,7 @@ async function sendChatMessage(conversationId: string, message: string) {
 }
 
 function App() {
-  const [conversationId, setConversationId] = useState(getOrCreateConversationId)
+  const [userId, setUserId] = useState(getSavedUserId)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [isSending, setIsSending] = useState(false)
@@ -54,11 +47,15 @@ function App() {
   }, [messages, isSending])
 
   function startNewConversation() {
-    const id = crypto.randomUUID()
-    sessionStorage.setItem(CONVERSATION_KEY, id)
-    setConversationId(id)
     setMessages([])
     setDraft('')
+    setError(null)
+  }
+
+  function handleUserIdChange(value: string) {
+    setUserId(value)
+    localStorage.setItem(USER_ID_KEY, value)
+    setMessages([])
     setError(null)
   }
 
@@ -66,7 +63,8 @@ function App() {
     event?.preventDefault()
 
     const message = draft.trim()
-    if (!message || isSending) {
+    const conversationId = userId.trim()
+    if (!message || !conversationId || isSending) {
       return
     }
 
@@ -112,6 +110,16 @@ function App() {
           <h1>Mi Amigo</h1>
           <p>Chat with your local AI agent</p>
         </div>
+        <label className="user-id-field">
+          User ID
+          <input
+            type="text"
+            value={userId}
+            onChange={(event) => handleUserIdChange(event.target.value)}
+            placeholder="Enter user ID"
+            disabled={isSending}
+          />
+        </label>
         <button type="button" className="ghost" onClick={startNewConversation}>
           New chat
         </button>
@@ -154,7 +162,7 @@ function App() {
           placeholder="Write a message…"
           disabled={isSending}
         />
-        <button type="submit" disabled={isSending || !draft.trim()}>
+        <button type="submit" disabled={isSending || !draft.trim() || !userId.trim()}>
           Send
         </button>
       </form>
