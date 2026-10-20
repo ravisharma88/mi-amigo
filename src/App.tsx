@@ -8,22 +8,60 @@ type ChatMessage = {
   content: string
 }
 
-const USER_ID_KEY = 'mi-amigo.userId'
+type AuthState =
+  | { status: 'loading' }
+  | { status: 'authenticated'; email: string }
+  | { status: 'unauthenticated' }
+  | { status: 'error'; message: string }
 
-function getSavedUserId() {
-  return localStorage.getItem(USER_ID_KEY) ?? ''
+type CurrentUser = {
+  email: string
 }
 
-async function sendChatMessage(conversationId: string, message: string) {
-  const response = await fetch(
-    `/chat?conversationId=${encodeURIComponent(conversationId)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: message,
-    },
-  )
+type CsrfResponse = {
+  token: string
+}
 
+async function getCurrentUser(signal?: AbortSignal): Promise<CurrentUser | null> {
+  const response = await fetch('/api/me', {
+    credentials: 'include',
+    signal,
+  })
+
+  if (response.status === 401) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error(`Could not check sign-in status (${response.status})`)
+  }
+
+  return response.json() as Promise<CurrentUser>
+}
+
+async function sendChatMessage(message: string) {
+  const csrfResponse = await fetch('/csrf', { credentials: 'include' })
+  if (csrfResponse.status === 401) {
+    throw new Error('unauthenticated')
+  }
+  if (!csrfResponse.ok) {
+    throw new Error(`Could not get a CSRF token (${csrfResponse.status})`)
+  }
+
+  const { token } = (await csrfResponse.json()) as CsrfResponse
+  const response = await fetch('/chat', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'text/plain',
+      'X-XSRF-TOKEN': token,
+    },
+    body: message,
+  })
+
+  if (response.status === 401) {
+    throw new Error('unauthenticated')
+  }
   if (!response.ok) {
     throw new Error(`Chat request failed (${response.status})`)
   }
@@ -32,12 +70,35 @@ async function sendChatMessage(conversationId: string, message: string) {
 }
 
 function App() {
-  const [userId, setUserId] = useState(getSavedUserId)
+  const [auth, setAuth] = useState<AuthState>({ status: 'loading' })
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    getCurrentUser(controller.signal)
+      .then((user) => {
+        setAuth(
+          user
+            ? { status: 'authenticated', email: user.email }
+            : { status: 'unauthenticated' },
+        )
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setAuth({
+            status: 'error',
+            message: 'Could not check your sign-in status. Please try again.',
+          })
+        }
+      })
+
+    return () => controller.abort()
+  }, [])
 
   useEffect(() => {
     listRef.current?.scrollTo({
@@ -46,25 +107,28 @@ function App() {
     })
   }, [messages, isSending])
 
-  function startNewConversation() {
-    setMessages([])
-    setDraft('')
-    setError(null)
-  }
-
-  function handleUserIdChange(value: string) {
-    setUserId(value)
-    localStorage.setItem(USER_ID_KEY, value)
-    setMessages([])
-    setError(null)
+  async function checkSignIn() {
+    setAuth({ status: 'loading' })
+    try {
+      const user = await getCurrentUser()
+      setAuth(
+        user
+          ? { status: 'authenticated', email: user.email }
+          : { status: 'unauthenticated' },
+      )
+    } catch {
+      setAuth({
+        status: 'error',
+        message: 'Could not check your sign-in status. Please try again.',
+      })
+    }
   }
 
   async function handleSubmit(event?: SubmitEvent<HTMLFormElement>) {
     event?.preventDefault()
 
     const message = draft.trim()
-    const conversationId = userId.trim()
-    if (!message || !conversationId || isSending) {
+    if (!message || auth.status !== 'authenticated' || isSending) {
       return
     }
 
@@ -80,7 +144,7 @@ function App() {
     setError(null)
 
     try {
-      const reply = await sendChatMessage(conversationId, message)
+      const reply = await sendChatMessage(message)
       setMessages((current) => [
         ...current,
         {
@@ -89,7 +153,16 @@ function App() {
           content: reply.trim() || 'No response from the agent.',
         },
       ])
-    } catch {
+    } catch (requestError) {
+      if (
+        requestError instanceof Error &&
+        requestError.message === 'unauthenticated'
+      ) {
+        setAuth({ status: 'unauthenticated' })
+        setMessages([])
+        setError('Your session has expired. Sign in again to continue.')
+        return
+      }
       setError('Could not reach the agent. Make sure it is running on localhost:8080.')
     } finally {
       setIsSending(false)
@@ -110,62 +183,90 @@ function App() {
           <h1>Mi Amigo</h1>
           <p>Chat with your local AI agent</p>
         </div>
-        <label className="user-id-field">
-          User ID
-          <input
-            type="text"
-            value={userId}
-            onChange={(event) => handleUserIdChange(event.target.value)}
-            placeholder="Enter user ID"
-            disabled={isSending}
-          />
-        </label>
-        <button type="button" className="ghost" onClick={startNewConversation}>
-          New chat
-        </button>
+        {auth.status === 'authenticated' && (
+          <p className="account-email" aria-label="Signed in account">
+            {auth.email}
+          </p>
+        )}
       </header>
 
-      <div className="message-list" ref={listRef}>
-        {messages.length === 0 && !isSending && (
-          <p className="empty">Send a message to start the conversation.</p>
-        )}
+      {auth.status === 'loading' && (
+        <main className="auth-panel" role="status">
+          Checking sign-in status…
+        </main>
+      )}
 
-        {messages.map((message) => (
-          <article key={message.id} className={`bubble ${message.role}`}>
-            <span className="role">
-              {message.role === 'user' ? 'You' : 'Amigo'}
-            </span>
-            <p>{message.content}</p>
-          </article>
-        ))}
+      {auth.status === 'unauthenticated' && (
+        <main className="auth-panel">
+          <h2>Sign in to chat</h2>
+          <p>Continue with your Google account to talk with Mi Amigo.</p>
+          {error && <p className="error">{error}</p>}
+          <button
+            type="button"
+            className="sign-in-button"
+            onClick={() =>
+              window.location.assign('/oauth2/authorization/google')
+            }
+          >
+            Sign in with Google
+          </button>
+        </main>
+      )}
 
-        {isSending && (
-          <article className="bubble assistant pending">
-            <span className="role">Amigo</span>
-            <p>Thinking…</p>
-          </article>
-        )}
-      </div>
+      {auth.status === 'error' && (
+        <main className="auth-panel">
+          <p className="error">{auth.message}</p>
+          <button type="button" className="ghost" onClick={() => void checkSignIn()}>
+            Try again
+          </button>
+        </main>
+      )}
 
-      {error && <p className="error">{error}</p>}
+      {auth.status === 'authenticated' && (
+        <>
+          <div className="message-list" ref={listRef}>
+            {messages.length === 0 && !isSending && (
+              <p className="empty">Send a message to start the conversation.</p>
+            )}
 
-      <form className="composer" onSubmit={handleSubmit}>
-        <label className="sr-only" htmlFor="message">
-          Message
-        </label>
-        <textarea
-          id="message"
-          rows={1}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Write a message…"
-          disabled={isSending}
-        />
-        <button type="submit" disabled={isSending || !draft.trim() || !userId.trim()}>
-          Send
-        </button>
-      </form>
+            {messages.map((message) => (
+              <article key={message.id} className={`bubble ${message.role}`}>
+                <span className="role">
+                  {message.role === 'user' ? 'You' : 'Amigo'}
+                </span>
+                <p>{message.content}</p>
+              </article>
+            ))}
+
+            {isSending && (
+              <article className="bubble assistant pending">
+                <span className="role">Amigo</span>
+                <p>Thinking…</p>
+              </article>
+            )}
+          </div>
+
+          {error && <p className="error">{error}</p>}
+
+          <form className="composer" onSubmit={handleSubmit}>
+            <label className="sr-only" htmlFor="message">
+              Message
+            </label>
+            <textarea
+              id="message"
+              rows={1}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Write a message…"
+              disabled={isSending}
+            />
+            <button type="submit" disabled={isSending || !draft.trim()}>
+              Send
+            </button>
+          </form>
+        </>
+      )}
     </div>
   )
 }
